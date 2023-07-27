@@ -153,7 +153,7 @@ int bitXor(int x, int y) {
  *   Rating: 1
  */
 int tmin(void) {
-  return 1 << 31;
+  return 1 << (1 << (1 << 2 + 1) - 1);
 
 }
 //2
@@ -165,7 +165,7 @@ int tmin(void) {
  *   Rating: 1
  */
 int isTmax(int x) {
-  return 2;
+  return !((~((~0) ^ x)) ^ x);
 }
 /* 
  * allOddBits - return 1 if all odd-numbered bits in word set to 1
@@ -176,7 +176,11 @@ int isTmax(int x) {
  *   Rating: 2
  */
 int allOddBits(int x) {
-  return 2;
+  int mark = 0xaa;
+  mark = mark << 8 + mark;
+  mark = mark << 8;
+  mark = mark << 8 + mark;
+  return !(~(x & mark | (mark >> 1)));
 }
 /* 
  * negate - return -x 
@@ -186,7 +190,7 @@ int allOddBits(int x) {
  *   Rating: 2
  */
 int negate(int x) {
-  return 2;
+  return ~x + 1;
 }
 //3
 /* 
@@ -199,7 +203,17 @@ int negate(int x) {
  *   Rating: 3
  */
 int isAsciiDigit(int x) {
-  return 2;
+  int mark0 = 3 << 4;
+  int mark1 = mark0 + 0xf;
+  // determine whether most 26 bit is all zero
+  int part0 = !(x & (~mark1));
+  // 4~5 bit must be 1
+  int part1 = !((mark0 & x) ^ mark0);
+  // determine whether least 4 bit is in 
+  // the non-excluded range [1010, 1011, 1100, 1101, 1110, 1111]
+  x &= 0xf;
+  int part2 = (x ^ 0xa) & (x ^ 0xb) & (x ^ 0xc) & (x ^ 0xd) & (x ^ 0xe) & (x ^0xf);
+  return part0 & part1 & part2;
 }
 /* 
  * conditional - same as x ? y : z 
