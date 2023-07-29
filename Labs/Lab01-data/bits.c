@@ -1,7 +1,7 @@
 /* 
  * CS:APP Data Lab 
  * 
- * jiachengfu FJC
+ * jiacheng fu
  * 
  * bits.c - Source file with your solutions to the Lab.
  *          This is the file you will hand in to your instructor.
@@ -153,8 +153,7 @@ int bitXor(int x, int y) {
  *   Rating: 1
  */
 int tmin(void) {
-  return 1 << (1 << (1 << 2 + 1) - 1);
-
+  return 1 << 31;
 }
 //2
 /*
@@ -165,7 +164,8 @@ int tmin(void) {
  *   Rating: 1
  */
 int isTmax(int x) {
-  return !((~((~0) ^ x)) ^ x);
+  int tmax = ~(1 << 31);
+  return !(tmax ^ x);
 }
 /* 
  * allOddBits - return 1 if all odd-numbered bits in word set to 1
@@ -177,10 +177,10 @@ int isTmax(int x) {
  */
 int allOddBits(int x) {
   int mark = 0xaa;
-  mark = mark << 8 + mark;
-  mark = mark << 8;
-  mark = mark << 8 + mark;
-  return !(~(x & mark | (mark >> 1)));
+  mark = (mark << 8) + mark;
+  mark = (mark << 16) + mark;
+  x &= mark;
+  return !(x ^ mark);
 }
 /* 
  * negate - return -x 
@@ -203,17 +203,11 @@ int negate(int x) {
  *   Rating: 3
  */
 int isAsciiDigit(int x) {
-  int mark0 = 3 << 4;
-  int mark1 = mark0 + 0xf;
-  // determine whether most 26 bit is all zero
-  int part0 = !(x & (~mark1));
-  // 4~5 bit must be 1
-  int part1 = !((mark0 & x) ^ mark0);
-  // determine whether least 4 bit is in 
-  // the non-excluded range [1010, 1011, 1100, 1101, 1110, 1111]
+  int part0 = x & (~0xf);
+  int part0_ok = !(part0 ^ 0x30);
   x &= 0xf;
-  int part2 = (x ^ 0xa) & (x ^ 0xb) & (x ^ 0xc) & (x ^ 0xd) & (x ^ 0xe) & (x ^0xf);
-  return part0 & part1 & part2;
+  int in_exclude = !((x ^ 0xa)) | !((x ^ 0xb)) | !((x ^ 0xc)) | !((x ^ 0xd)) | !((x ^ 0xe)) | !((x ^0xf));
+  return part0_ok & (!in_exclude);
 }
 /* 
  * conditional - same as x ? y : z 
@@ -223,7 +217,14 @@ int isAsciiDigit(int x) {
  *   Rating: 3
  */
 int conditional(int x, int y, int z) {
-  return 2;
+  x = !x;
+  // convert x all bits to the value of 0-index bit
+  x = (x << 1) | x;
+  x = (x << 2) | x;
+  x = (x << 4) | x;
+  x = (x << 8) | x;
+  x = (x << 16) | x;
+  return (~x & y) | (x & z);
 }
 /* 
  * isLessOrEqual - if x <= y  then return 1, else return 0 
@@ -233,7 +234,14 @@ int conditional(int x, int y, int z) {
  *   Rating: 3
  */
 int isLessOrEqual(int x, int y) {
-  return 2;
+  // if you do not consider the sign bit of 2's complement, 
+  // may cause overflow, such as y=1, x=-21474648(min)
+  int sig_x = x >> 31;
+  int sig_y = y >> 31;
+  int r = (~x + 1) + y; // y - x
+  int equal_case = !(sig_x ^ sig_y) & (!((r >> 31) & 0x1));
+  int not_eq_case = (sig_x ^ sig_y) & sig_x; // equal to (sig_x ^ sig_y) & (!sign_x && sig_y)
+  return !!(equal_case | not_eq_case);
 }
 //4
 /* 
@@ -245,7 +253,12 @@ int isLessOrEqual(int x, int y) {
  *   Rating: 4 
  */
 int logicalNeg(int x) {
-  return 2;
+  x = (x >> 16) | x;
+  x = (x >> 8) | x;
+  x = (x >> 4) | x;
+  x = (x >> 2) | x;
+  x = (x >> 1) | x;
+  return (~x) & 0x1;
 }
 /* howManyBits - return the minimum number of bits required to represent x in
  *             two's complement
@@ -275,7 +288,20 @@ int howManyBits(int x) {
  *   Rating: 4
  */
 unsigned floatScale2(unsigned uf) {
-  return 2;
+  unsigned inf = 0x7f800000;
+  unsigned non = 0x007fffff;
+  if (!((uf & inf) ^ inf) && (uf | non)) {
+    return uf; // uf is NaN
+  }
+  if (uf & inf) {
+    // IEEE754 Normalized
+    unsigned exponent = uf & inf;
+    return (uf & (~inf)) | (exponent + 0x00800000);
+  } else {
+    // IEEE754 Denormalized
+    unsigned decimal = uf & non;
+    return (uf & (~non)) | (decimal << 1);
+  }
 }
 /* 
  * floatFloat2Int - Return bit-level equivalent of expression (int) f
@@ -290,7 +316,44 @@ unsigned floatScale2(unsigned uf) {
  *   Rating: 4
  */
 int floatFloat2Int(unsigned uf) {
-  return 2;
+  unsigned inf = 0x7f800000;
+  unsigned non = 0x007fffff;
+  unsigned sig = 0x80000000; // sign bit
+  int bias = (1 << 7) - 1;
+  int ans = uf & non; // get decimal part
+  if (uf & inf) {
+    // IEEE754 Normalized
+    ans = ans | 0x00800000; // the prefix of decimal part is 1.
+    // int shift = ((uf & inf) >> 23) - bias ERROR: unsigned is never < 0.
+    unsigned shift = ((uf & inf) >> 23);
+    if (shift < bias) {
+      return 0;
+    } else if (shift >= 30 + bias) {
+      // overflow
+      return 0x80000000u;
+    } else {
+      int tmp = shift - bias;
+      if (tmp < 23) {
+        ans = ans >> (23 - tmp);
+      } else {
+        ans = ans << (tmp - 23);
+      }
+    }
+  } else {
+    // IEEE754 Denormalized
+    int shift = 1 - bias;
+    if (shift < 0) {
+      ans = ans >> (-shift);
+    } else {
+      ans = ans << shift;
+    }
+  }
+  // remove sign bit
+  ans = ans & (~sig);
+  if (uf & sig) { // negative
+    return ~ans + 1;
+  }
+  return ans; // positive
 }
 /* 
  * floatPower2 - Return bit-level equivalent of the expression 2.0^x
@@ -306,5 +369,15 @@ int floatFloat2Int(unsigned uf) {
  *   Rating: 4
  */
 unsigned floatPower2(int x) {
-    return 2;
+  if (x == 0) {
+    return 0x3f800000;
+  }
+  if (x < -127) {
+    return 0;
+  }
+  if (x > 128) {
+    return 0x7f800000;
+  }
+  int exp = x + 127;
+  return exp << 23;
 }
