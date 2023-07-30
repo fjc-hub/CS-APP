@@ -273,7 +273,28 @@ int logicalNeg(int x) {
  *  Rating: 4
  */
 int howManyBits(int x) {
-  return 0;
+  // Tips: The range of two's complement of two bits is: [-2^(n-1), 2^(n-1) - 1]
+  //       so the range that can be represented by 1 bit in 2's complement is [-1, 0]
+  // Target: find the minimum n such that: 
+  //            -2^(n-1) <= x   , if x < 0  =>   -x <=  2^(n-1)  =>   log(-x) + 1 <= n
+  //            x <= 2^(n-1) - 1, else      =>  x+1 <=  2^(n-1)  =>  log(x+1) + 1 <= n
+  // How to log2: using「Binary-Search」to calculate log2 mathematic in reversed manner in [1, tmax]
+  int sign = x >> 31;
+  // x = (sign & (-x)) | (~sign & (x+1));
+  x = (sign & ~x) | (~sign & x);
+  // get the most-significant bit
+  int b16 = !!(x >> 16) << 4;
+  x >>= b16; // select most-significant 16 bits or least-significant 16 bits
+  int b8 = !!(x >> 8) << 3;
+  x >>= b8;
+  int b4 = !!(x >> 4) << 2;
+  x >>= b4;
+  int b2 = !!(x >> 2) << 1;
+  x >>= b2;
+  int b1 = !!(x >> 1);
+  x >>= b1;
+  int b0 = x;
+  return b16 + b8 + b4 + b2 + b1 + b0 + 1;
 }
 //float
 /* 
