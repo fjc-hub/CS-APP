@@ -1,0 +1,30 @@
+Phase 1:
+$ gdb
+(gdb) file bomb
+(gdb) break *0x400ee0
+(gdb) run
+(gdb) x/s 0x402400
+0x402400:       "Border relations with Canada have never been better."
+
+
+Phase 2:
+(gdb) break read_six_numbers
+...
+(gdb) x/s 0x4025c3
+0x4025c3:       "%d %d %d %d %d %d"
+...
+(gdb) break *0x400f1c
+
+
+Phase 5:
+(gdb) break *0x401096
+(gdb) x/s 0x40245e
+
+Phase 6:
+(gdb) x/24w 0x6032d0
+(gdb) break *0x4011bd
+(gdb) break *0x4011da
+
+Secret Phase:
+(gdb) break *0x401273
+(gdb) x/14xg 0x6030f0
