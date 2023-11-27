@@ -20,9 +20,57 @@ int is_transpose(int M, int N, int A[N][M], int B[M][N]);
  *     be graded. 
  */
 char transpose_submit_desc[] = "Transpose submission";
-void transpose_submit(int M, int N, int A[N][M], int B[M][N])
-{
+void transpose_submit(int M, int N, int A[N][M], int B[M][N]) {
+    int i, j, ii, jj, x, y;
+    if (M == 32 && N == 32) {
+        for (i=0; i < M; i+=8) {
+            ii = i + 8;
+            ii = ii > M ? M : ii; // can be omitted
+            for (j=0; j < N; j+=8) {
+                jj = j + 8;
+                jj = jj > N ? N : jj; // can be omitted
+                if (i == j) { 
+                    /*  
+                        因为A和B两个数组基地址的特殊性：每8个int映射到同一个cache set的同一个cache line
+                        导致对角线位置存在较多的conflict miss,需要特殊处理
+                    */
+                    for (x=i; x < ii; x++) {
+                        for (y=j; y < x; y++) {
+                            B[y][x] = A[x][y];
+                        }
+                        for (y=jj-1; y >= x; y--) {
+                            B[y][x] = A[x][y];
+                        }
+                        /*==Equivalent Loop==*/
+                        // for (y=j; y < jj; y++) {
+                        //     if (x == y) {
+                        //         continue;
+                        //     }
+                        //     B[y][x] = A[x][y];
+                        // }
+                        // B[x][x] = A[x][x];
+                    }
+                } else {
+                    for (x=i; x < ii; x++) {
+                        for (y=j; y < jj; y++) {
+                            B[y][x] = A[x][y];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    
 }
+
+// 00 04 08 0c 10 
+// 0x20
+
+//  1  2  3  4  5  6
+//  7  8  9 10 11 12
+// 13 14 15 16 17 18
+// 19 20 21 22 23 24
 
 /* 
  * You can define additional transpose functions below. We've defined
