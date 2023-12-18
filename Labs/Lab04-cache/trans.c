@@ -22,92 +22,97 @@ int is_transpose(int M, int N, int A[N][M], int B[M][N]);
 char transpose_submit_desc[] = "Transpose submission";
 void transpose_submit(int M, int N, int A[N][M], int B[M][N]){
     int i, j, k,min;
-    int a0, a1, a2, a3, a4, a5, a6, a7;
+    int r0, r1, r2, r3, r4, r5, r6, r7; // values stored in register
     min = M>N?N:M;
     min = 8*((int)(min/8));
     //Divide matrix into 8x8 block.
     for(i = 0; i < min; i += 8){
         for(j = 0; j < min; j += 8){
-            
-            //Firstly, focus on the top half of a 8x8 block in A.
-            for(k = j; k < j + 4; k++){
-                a0 = A[k][i];
-                a1 = A[k][i+1];
-                a2 = A[k][i+2];
-                a3 = A[k][i+3];
-                a4 = A[k][i+4];
-                a5 = A[k][i+5];
-                a6 = A[k][i+6];
-                a7 = A[k][i+7];
-                
-                //Place the top-left correctly.
-                B[i][k] = a0;
-                B[i+1][k] = a1;
-                B[i+2][k] = a2;
-                B[i+3][k] = a3;
-                
-                //Place the top-right temporarily - use B as a 'cache'.
-                B[i][k+4] = a4;
-                B[i+1][k+4] = a5;
-                B[i+2][k+4] = a6;
-                B[i+3][k+4] = a7;
+            // Move A[i..i+3][j..j+7], load a cache line once
+            for (k = i; k < i+4; k++) {
+                // load a cache-line data of A into 8 register batchly
+                r0 = A[k][j];
+                r1 = A[k][j+1];
+                r2 = A[k][j+2];
+                r3 = A[k][j+3];
+                r4 = A[k][j+4];
+                r5 = A[k][j+5];
+                r6 = A[k][j+6];
+                r7 = A[k][j+7];
+
+                // store into B[j..j+3][k]
+                B[j][k] = r0;
+                B[j+1][k] = r1;
+                B[j+2][k] = r2;
+                B[j+3][k] = r3;
+
+                // store into B[j..j+3][k+4] temporarily to avoid conflict miss, as temporary cache
+                B[j][k+4] = r4;
+                B[j+1][k+4] = r5;
+                B[j+2][k+4] = r6;
+                B[j+3][k+4] = r7;
             }
-        
-            //con't.
-            for(k = i; k < i + 4; k++){
-                //Read temporary guys.
-                a0 = B[k][j+4];
-                a1 = B[k][j+5];
-                a2 = B[k][j+6];
-                a3 = B[k][j+7];
+
+            // Move B[j..j+3][i+4..i+7] to B[j+4..j+7][i..i+3], 1*4 elements once
+            for (k = j; k < j+4; k++) {
+                // load temporary cache into registers batchly
+                r0 = B[k][i+4];
+                r1 = B[k][i+5];
+                r2 = B[k][i+6];
+                r3 = B[k][i+7];
+
+                // load A[k+4][j..j+3]
+                r4 = A[i+4][k];
+                r5 = A[i+5][k];
+                r6 = A[i+6][k];
+                r7 = A[i+7][k];
+
+                // store from registers, pay attention to sequence of part.1 and part.2
+                // part.1
+                B[k][i+4] = r4;
+                B[k][i+5] = r5;
+                B[k][i+6] = r6;
+                B[k][i+7] = r7;
+                // part.2  put part.2 after part.1; 
+                //  because you will operate next 4x4 block of B (B[j+4..j+7][i+4..i+7])
+                B[k+4][i] = r0;
+                B[k+4][i+1] = r1;
+                B[k+4][i+2] = r2;
+                B[k+4][i+3] = r3;
                 
-                //Read left-bottom of A's 8x8 block.
-                a4 = A[j+4][k];
-                a5 = A[j+5][k];
-                a6 = A[j+6][k];
-                a7 = A[j+7][k];
-                
-                //Place them correctly.
-                B[k][j+4] = a4;
-                B[k][j+5] = a5;
-                B[k][j+6] = a6;
-                B[k][j+7] = a7;
-                B[k+4][j] = a0;
-                B[k+4][j+1] = a1;
-                B[k+4][j+2] = a2;
-                B[k+4][j+3] = a3;
+                // part.1  if execute part.1 after part.2 will case next 4x4 block-move more misses
+                // B[k][i+4] = r4;
+                // B[k][i+5] = r5;
+                // B[k][i+6] = r6;
+                // B[k][i+7] = r7;
             }
-            
-            //Handle the remaining guys of that 8x8 block, 
-            //just swapping them by diagonal.
-            for(k=i+4;k<i+8;k++){
-                a0 = A[j+4][k];
-                a1 = A[j+5][k];
-                a2 = A[j+6][k];
-                a3 = A[j+7][k];
-                B[k][j+4] = a0;
-                B[k][j+5] = a1;
-                B[k][j+6] = a2;
-                B[k][j+7] = a3;
+
+            // Move A[i+4..i+7][j+4..j+7] method-1
+            // for (k = i+4; k < i+8; k++) {
+            //     for (r0 = j+4; r0 < j+8; r0++) {
+            //         if (k != r0) {
+            //             B[r0][k] = A[k][r0];
+            //         }
+            //     }
+            //     B[k][k] = A[k][k]; // move the diagonal element last
+            // }
+
+            // Move A[i+4..i+7][j+4..j+7] method-2 (with less misses than method-1 when the 4x4 blocks are in diagonal)
+            for (k = i+4; k < i+8; k++) {
+                r0 = A[k][j+4];
+                r1 = A[k][j+5];
+                r2 = A[k][j+6];
+                r3 = A[k][j+7];
+                B[j+4][k] = r0;
+                B[j+5][k] = r1;
+                B[j+6][k] = r2;
+                B[j+7][k] = r3;
             }
         }
     }
     
     //If this is not a square matrix, do simple swap for the remaining part.
-    k=0;
-    if (M!=N) {
-        for(i = 0; i < min; i ++)
-            for(j = min; j < M; j ++){
-                k = A[i][j];
-                B[j][i] = k;
-            }
-        for (i = min; i<N; i++) {
-            for (j=0; j<M;j++) {
-                k = A[i][j];
-                B[j][i] = k;
-            }
-        }
-    }
+    
 }
 
 char transpose_submit_first_version_desc[] = "My First Version";
