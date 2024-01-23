@@ -21,13 +21,64 @@ int is_transpose(int M, int N, int A[N][M], int B[M][N]);
  */
 char transpose_submit_desc[] = "Transpose submission";
 void transpose_submit(int M, int N, int A[N][M], int B[M][N]){
-    int i, j, k,min;
+    int i, j, k, blkSize;
     int r0, r1, r2, r3, r4, r5, r6, r7; // values stored in register
-    min = M>N?N:M;
-    min = 8*((int)(min/8));
-    //Divide matrix into 8x8 block.
-    for(i = 0; i < min; i += 8){
-        for(j = 0; j < min; j += 8){
+
+    if (M == 61) {
+        for (i = 0; i < N; i += 16) {
+            for (j = 0; j < M; j += 16) {
+                for (r0 = i; r0 < i + 16 && r0 < N; r0++) {
+                    for (r1 = j; r1 < j + 16 && r1 < M; r1++) {
+                        B[r1][r0] = A[r0][r1];
+                    }
+                }
+            }
+        }
+        return;
+    } else if (M == 32) {
+        blkSize = 8;
+        for (i=0; i < N; i+=blkSize) {
+            r0 = i + blkSize;
+            r0 = r0 > N ? N : r0; // can be omitted
+            for (j=0; j < M; j+=blkSize) {
+                r1 = j + blkSize;
+                r1 = r1 > M ? M : r1; // can be omitted
+                if (i == j) { 
+                    /*  
+                        因为A和B两个数组基地址的特殊性：每多个int映射到同一个cache set的同一个cache line
+                        导致对角线位置存在较多的conflict miss,需要特殊处理
+                    */
+                    for (r2=i; r2 < r0; r2++) {
+                        for (r3=j; r3 < r2; r3++) {
+                            B[r3][r2] = A[r2][r3];
+                        }
+                        for (r3=r1-1; r3 >= r2; r3--) {
+                            B[r3][r2] = A[r2][r3];
+                        }
+                        /*==Equivalent Loop==*/
+                        // for (r3=j; r3 < r1; r3++) {
+                        //     if (r2 == r3) {
+                        //         continue;
+                        //     }
+                        //     B[r3][r2] = A[r2][r3];
+                        // }
+                        // B[r2][r2] = A[r2][r2];
+                    }
+                } else {
+                    for (r2=i; r2 < r0; r2++) {
+                        for (r3=j; r3 < r1; r3++) {
+                            B[r3][r2] = A[r2][r3];
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+    
+    // 64 * 64 Divide matrix into 8x8 block.
+    for(i = 0; i < N; i += 8){
+        for(j = 0; j < M; j += 8){
             // Move A[i..i+3][j..j+7], load a cache line once
             for (k = i; k < i+4; k++) {
                 // load a cache-line data of A into 8 register batchly
@@ -110,9 +161,6 @@ void transpose_submit(int M, int N, int A[N][M], int B[M][N]){
             }
         }
     }
-    
-    //If this is not a square matrix, do simple swap for the remaining part.
-    
 }
 
 char transpose_submit_first_version_desc[] = "My First Version";
