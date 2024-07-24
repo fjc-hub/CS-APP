@@ -104,16 +104,16 @@ int main(int argc, char **argv)
         switch (c) {
         case 'h':             /* print help message */
             usage();
-	    break;
+	        break;
         case 'v':             /* emit additional diagnostic info */
             verbose = 1;
-	    break;
+	        break;
         case 'p':             /* don't print a prompt */
             emit_prompt = 0;  /* handy for automatic testing */
-	    break;
-	default:
+	        break;
+        default:
             usage();
-	}
+        }
     }
 
     /* Install the signal handlers */
@@ -132,22 +132,22 @@ int main(int argc, char **argv)
     /* Execute the shell's read/eval loop */
     while (1) {
 
-	/* Read command line */
-	if (emit_prompt) {
-	    printf("%s", prompt);
-	    fflush(stdout);
-	}
-	if ((fgets(cmdline, MAXLINE, stdin) == NULL) && ferror(stdin))
-	    app_error("fgets error");
-	if (feof(stdin)) { /* End of file (ctrl-d) */
-	    fflush(stdout);
-	    exit(0);
-	}
+        /* Read command line */
+        if (emit_prompt) {
+            printf("%s", prompt);
+            fflush(stdout);
+        }
+        if ((fgets(cmdline, MAXLINE, stdin) == NULL) && ferror(stdin))
+            app_error("fgets error");
+        if (feof(stdin)) { /* End of file (ctrl-d) */
+            fflush(stdout);
+            exit(0);
+        }
 
-	/* Evaluate the command line */
-	eval(cmdline);
-	fflush(stdout);
-	fflush(stdout);
+        /* Evaluate the command line */
+        eval(cmdline);
+        fflush(stdout);
+        fflush(stdout);
     } 
 
     exit(0); /* control never reaches here */
@@ -166,6 +166,45 @@ int main(int argc, char **argv)
 */
 void eval(char *cmdline) 
 {
+    if (cmdline == NULL) // ignore empty command
+        return;
+    int bg, jid;
+    char **argv = malloc(sizeof(*argv)*MAXARGS);
+    bg = parseline(cmdline, argv);
+    if (argv[0] == "quit" || argv[0] == "jobs" || 
+            argv[0] == "bg" || argv[0] == "fg") { // built-in commands
+        builtin_cmd(argv)
+    } else {
+        if (argv[0] == NULL) // ignore empty command
+            return;
+        pid_t pid;
+        if ((pid = fork()) == 0) { // child process
+            // move child to a new process group, to avoid parent(shell) receiving SIGINT(ctrl+c)
+            setpgid(0, 0);
+            // load and run program
+            if (execve(argv[0], argv) < 0) {
+                app_error("execve error");
+            }
+            // the child process certainly not reach here
+        }
+
+        if (!bg) {
+            addjob(jobs, pid, FG, cmdline); // add job as FG
+
+            // parent waits for foreground job to terminate
+            int status;
+            if (waitpid(pid, &status, 0) < 0) {
+                app_error("waitpid error");
+            }
+
+
+
+        } else {
+            addjob(jobs, pid, BG, cmdline); // add job as BG
+
+            printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+        }
+    }
     return;
 }
 
@@ -192,27 +231,27 @@ int parseline(const char *cmdline, char **argv)
     /* Build the argv list */
     argc = 0;
     if (*buf == '\'') {
-	buf++;
-	delim = strchr(buf, '\'');
+        buf++;
+        delim = strchr(buf, '\'');
     }
     else {
-	delim = strchr(buf, ' ');
+	    delim = strchr(buf, ' ');
     }
 
     while (delim) {
-	argv[argc++] = buf;
-	*delim = '\0';
-	buf = delim + 1;
-	while (*buf && (*buf == ' ')) /* ignore spaces */
-	       buf++;
+        argv[argc++] = buf;
+        *delim = '\0';
+        buf = delim + 1;
+        while (*buf && (*buf == ' ')) /* ignore spaces */
+            buf++;
 
-	if (*buf == '\'') {
-	    buf++;
-	    delim = strchr(buf, '\'');
-	}
-	else {
-	    delim = strchr(buf, ' ');
-	}
+        if (*buf == '\'') {
+            buf++;
+            delim = strchr(buf, '\'');
+        }
+        else {
+            delim = strchr(buf, ' ');
+        }
     }
     argv[argc] = NULL;
     
@@ -232,7 +271,16 @@ int parseline(const char *cmdline, char **argv)
  */
 int builtin_cmd(char **argv) 
 {
-    return 0;     /* not a builtin command */
+    if (argv[0] == "quit") {
+        exit(0);
+    } else if (argv[0] == "jobs") {
+        listjobs(jobs);
+    } else if (argv[0] == "bg" || argv[0] == "fg") {
+        do_bgfg(argv);
+    } else {
+        app_error("invalid built-in command"); /* not a builtin command */
+    }
+    return 0;
 }
 
 /* 
@@ -240,6 +288,11 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv) 
 {
+    if (argv[0] == "fg") {
+        // switch to foreground
+
+    }
+    // send SIGCONT
     return;
 }
 
