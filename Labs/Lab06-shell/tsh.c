@@ -138,11 +138,15 @@ int main(int argc, char **argv)
             fflush(stdout);
         }
         if ((fgets(cmdline, MAXLINE, stdin) == NULL) && ferror(stdin))
-            app_error("fgets error");
+            unix_error("fgets cmdline");
         if (feof(stdin)) { /* End of file (ctrl-d) */
             fflush(stdout);
             exit(0);
         }
+
+        // ignore empty command
+        if (cmdline == NULL)
+            return;
 
         /* Evaluate the command line */
         eval(cmdline);
@@ -166,41 +170,59 @@ int main(int argc, char **argv)
 */
 void eval(char *cmdline) 
 {
-    if (cmdline == NULL) // ignore empty command
-        return;
-    int bg, jid;
+    // calculate the mask of signals to block
+    int mask, prev_mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD|SIGINT|SIGTSTP);
+
     char **argv = malloc(sizeof(*argv)*MAXARGS);
-    bg = parseline(cmdline, argv);
-    if (argv[0] == "quit" || argv[0] == "jobs" || 
-            argv[0] == "bg" || argv[0] == "fg") { // built-in commands
-        builtin_cmd(argv)
+    int bg = parseline(cmdline, argv);
+    if (!strcmp(argv[0], "quit") || !strcmp(argv[0], "jobs") || 
+        !strcmp(argv[0], "bg") || !strcmp(argv[0], "fg")) {
+        // built-in commands
+        builtin_cmd(argv);
     } else {
-        if (argv[0] == NULL) // ignore empty command
-            return;
+        // executable commands
+        // check if the executable file exists
+        // Command not found
+
         pid_t pid;
-        if ((pid = fork()) == 0) { // child process
+        int mask_reap, prev_mask_reap;
+        sigemptyset(&mask_reap);
+        sigaddset(&mask_reap, SIGCHLD);
+        // block SIGCHLD signal(reap child in handler), be sure to addjob() must be called before deletejob()
+        sigprocmask(SIG_BLOCK, &mask_reap, &prev_mask_reap); 
+        
+        if ((pid = fork()) == 0) {
+            // child process
+            // unblock SIGCHLD signal of child, because it inherits signal mask from parent
+            sigprocmask(SIG_SETMASK, &prev_mask_reap, NULL);
             // move child to a new process group, to avoid parent(shell) receiving SIGINT(ctrl+c)
             setpgid(0, 0);
             // load and run program
-            if (execve(argv[0], argv) < 0) {
-                app_error("execve error");
+            if (execve(argv[0], argv, environ) < 0) {
+                unix_error("eval execve");
             }
             // the child process certainly not reach here
         }
 
         if (!bg) {
+            sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signals with races(global variable jobs) to avoid interrupting
             addjob(jobs, pid, FG, cmdline); // add job as FG
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the signals
 
             // parent waits for foreground job to terminate
             int status;
             if (waitpid(pid, &status, 0) < 0) {
-                app_error("waitpid error");
+                unix_error("eval waitpid");
             }
 
-
+            waitfg();
 
         } else {
+            sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signals with races(global variable jobs) to avoid interrupting
             addjob(jobs, pid, BG, cmdline); // add job as BG
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the signals
 
             printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
         }
@@ -271,11 +293,11 @@ int parseline(const char *cmdline, char **argv)
  */
 int builtin_cmd(char **argv) 
 {
-    if (argv[0] == "quit") {
+    if (!strcmp(argv[0], "quit")) {
         exit(0);
-    } else if (argv[0] == "jobs") {
+    } else if (!strcmp(argv[0], "jobs")) {
         listjobs(jobs);
-    } else if (argv[0] == "bg" || argv[0] == "fg") {
+    } else if (!strcmp(argv[0], "bg") || !strcmp(argv[0], "fg")) {
         do_bgfg(argv);
     } else {
         app_error("invalid built-in command"); /* not a builtin command */
@@ -288,11 +310,25 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv) 
 {
-    if (argv[0] == "fg") {
+    pid_t pid;
+    if (!strncmp(argv[1], "%", 1)) {
+        struct job_t* job = getjobjid(jobs, atoi(argv[1]));
+        if (job == NULL) {
+            printf("%s: No such job\n", argv[1]);
+            return;
+        }
+        pid = job->pid;
+    } else {
+        pid = atoi(argv[1]);
+    }
+    if (!strcmp(argv[0], "fg")) {
         // switch to foreground
 
     }
     // send SIGCONT
+    if (kill(-pid, SIGCONT) < 0) {
+        unix_error("kill SIGCONT");
+    }
     return;
 }
 
@@ -301,6 +337,10 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
+    // get current FG process(only one process in a job in this lab)
+    pid_t pid = fgpid(jobs);
+    // wait for the FG process
+
     return;
 }
 
@@ -317,6 +357,44 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig) 
 {
+    int old_errno = errno; // save errno
+    sigset_t mask, prev_mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD|SIGINT|SIGTSTP);
+
+    // obtain status information of children processes
+    // no block current calling children | obtain getting stopped children | obtain getting continued children
+    int status, pid;
+    while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) < 0) {
+        /* block signals to avoid interrupting by other signal_handler 
+           that has race condition(e.g. access global jobs) with this handler */
+        sigprocmask(SIG_BLOCK, &mask, &prev_mask);
+
+        struct job_t * job = getjobpid(jobs, pid);
+        if (WIFSTOPPED(status)) { // deal with stopped child 
+            job->state = ST;
+        } else if (WIFCONTINUED(status)) { // deal with continued child 
+            if (job->pid == fgpid(jobs)) {
+                job->state = FG;
+            } else {
+                job->state = BG;
+            }
+        } else if (WIFEXITED(status)) { // deal with terminated child
+            deletejob(jobs, pid);
+        } else {
+            write(STDOUT_FILENO, "sigchld_handler unexpected status (0x%x)\n", status);
+        }
+
+        // restore signals
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    }
+    // deal error if exists
+    if (errno != ECHILD) { // ECHILD means no child process
+        write(STDOUT_FILENO, "SIGCHLD received\n", 18);
+    }
+
+    errno = old_errno; // restore errno
+
     return;
 }
 
@@ -327,6 +405,19 @@ void sigchld_handler(int sig)
  */
 void sigint_handler(int sig) 
 {
+    int old_errno = errno; // save errno
+    sigset_t mask, prev_mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD|SIGINT|SIGTSTP);
+    sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signals
+
+    pid_t pid = fgpid(jobs);
+    if (kill(-pid, SIGINT) < 0) {
+        write(STDOUT_FILENO, "sigint_handler: kill (%d) failed: %s\n", pid, strerror(errno));
+    }
+
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore signals
+    errno = old_errno; // restore errno
     return;
 }
 
@@ -337,6 +428,19 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig) 
 {
+    int old_errno = errno; // save errno
+    sigset_t mask, prev_mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD|SIGINT|SIGTSTP);
+    sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signals
+
+    pid_t pid = fgpid(jobs);
+    if (kill(-pid, SIGTSTP) < 0) {
+        write(STDOUT_FILENO, "sigint_handler: kill (%d) failed: %s\n", pid, strerror(errno));
+    }
+
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore signals
+    errno = old_errno; // restore errno
     return;
 }
 
