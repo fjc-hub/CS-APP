@@ -145,8 +145,8 @@ int main(int argc, char **argv)
         }
 
         // ignore empty command
-        if (cmdline == NULL)
-            return;
+        if (cmdline == NULL || cmdline[0] == '\n')
+            continue;
 
         /* Evaluate the command line */
         eval(cmdline);
@@ -171,7 +171,7 @@ int main(int argc, char **argv)
 void eval(char *cmdline) 
 {
     // calculate the mask of signals to block
-    int mask, prev_mask;
+    sigset_t mask, prev_mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGCHLD|SIGINT|SIGTSTP);
 
@@ -184,19 +184,25 @@ void eval(char *cmdline)
     } else {
         // executable commands
         // check if the executable file exists
-        // Command not found
+        FILE *fp = fopen(argv[0], "r");
+        if (fp == NULL) {
+            printf("%s: Command not found\n", argv[0]);
+            return;
+        } else {
+            fclose(fp);
+        }
 
         pid_t pid;
-        int mask_reap, prev_mask_reap;
+        sigset_t mask_reap;
         sigemptyset(&mask_reap);
         sigaddset(&mask_reap, SIGCHLD);
         // block SIGCHLD signal(reap child in handler), be sure to addjob() must be called before deletejob()
-        sigprocmask(SIG_BLOCK, &mask_reap, &prev_mask_reap); 
+        sigprocmask(SIG_BLOCK, &mask_reap, &prev_mask); 
         
         if ((pid = fork()) == 0) {
             // child process
             // unblock SIGCHLD signal of child, because it inherits signal mask from parent
-            sigprocmask(SIG_SETMASK, &prev_mask_reap, NULL);
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             // move child to a new process group, to avoid parent(shell) receiving SIGINT(ctrl+c)
             setpgid(0, 0);
             // load and run program
@@ -207,7 +213,7 @@ void eval(char *cmdline)
         }
 
         if (!bg) {
-            sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signals with races(global variable jobs) to avoid interrupting
+            sigprocmask(SIG_BLOCK, &mask, NULL); // block signals with races(global variable jobs) to avoid interrupting
             addjob(jobs, pid, FG, cmdline); // add job as FG
             sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the signals
 
@@ -217,10 +223,10 @@ void eval(char *cmdline)
                 unix_error("eval waitpid");
             }
 
-            waitfg();
+            waitfg(pid);
 
         } else {
-            sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signals with races(global variable jobs) to avoid interrupting
+            sigprocmask(SIG_BLOCK, &mask, NULL); // block signals with races(global variable jobs) to avoid interrupting
             addjob(jobs, pid, BG, cmdline); // add job as BG
             sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the signals
 
@@ -337,8 +343,6 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-    // get current FG process(only one process in a job in this lab)
-    pid_t pid = fgpid(jobs);
     // wait for the FG process
 
     return;
@@ -363,9 +367,9 @@ void sigchld_handler(int sig)
     sigaddset(&mask, SIGCHLD|SIGINT|SIGTSTP);
 
     // obtain status information of children processes
-    // no block current calling children | obtain getting stopped children | obtain getting continued children
+    // no block calling handler | obtain getting stopped children | obtain getting continued children
     int status, pid;
-    while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) < 0) {
+    while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
         /* block signals to avoid interrupting by other signal_handler 
            that has race condition(e.g. access global jobs) with this handler */
         sigprocmask(SIG_BLOCK, &mask, &prev_mask);
@@ -382,7 +386,7 @@ void sigchld_handler(int sig)
         } else if (WIFEXITED(status)) { // deal with terminated child
             deletejob(jobs, pid);
         } else {
-            write(STDOUT_FILENO, "sigchld_handler unexpected status (0x%x)\n", status);
+            write(STDOUT_FILENO, "sigchld_handler unexpected status\n", 36);
         }
 
         // restore signals
@@ -413,7 +417,7 @@ void sigint_handler(int sig)
 
     pid_t pid = fgpid(jobs);
     if (kill(-pid, SIGINT) < 0) {
-        write(STDOUT_FILENO, "sigint_handler: kill (%d) failed: %s\n", pid, strerror(errno));
+        write(STDOUT_FILENO, "sigint_handler: kill failed\n", 59);
     }
 
     sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore signals
@@ -436,7 +440,7 @@ void sigtstp_handler(int sig)
 
     pid_t pid = fgpid(jobs);
     if (kill(-pid, SIGTSTP) < 0) {
-        write(STDOUT_FILENO, "sigint_handler: kill (%d) failed: %s\n", pid, strerror(errno));
+        write(STDOUT_FILENO, "sigint_handler: kill failed\n", 59);
     }
 
     sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore signals
