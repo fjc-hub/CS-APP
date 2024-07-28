@@ -43,6 +43,8 @@ int verbose = 0;            /* if true, print additional output */
 int nextjid = 1;            /* next job ID to allocate */
 char sbuf[MAXLINE];         /* for composing sprintf messages */
 
+volatile sig_atomic_t fg_pid_exit_flag; /* if > 0, indicate the current FG process has been reaped by singal handler. else not */
+
 struct job_t {              /* The job struct */
     pid_t pid;              /* job PID */
     int jid;                /* job ID [1, 2, ...] */
@@ -206,7 +208,7 @@ void eval(char *cmdline)
             // move child to a new process group, to avoid parent(shell) receiving SIGINT(ctrl+c)
             setpgid(0, 0);
             // load and run program
-            if (execve(argv[0], argv, environ) < 0) {
+            if (execve(argv[0], argv, environ) < 0) { // exec*() will set signal handler back to default handler, but signal block mask not
                 unix_error("eval execve");
             }
             // the child process certainly not reach here
@@ -215,15 +217,16 @@ void eval(char *cmdline)
         if (!bg) {
             sigprocmask(SIG_BLOCK, &mask, NULL); // block signals with races(global variable jobs) to avoid interrupting
             addjob(jobs, pid, FG, cmdline); // add job as FG
-            sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the signals
+
+            // unblock SIGINT and SIGTSTP before waitfg after addjob
+            sigset_t inner_mask;
+            sigfillset(&inner_mask);
+            sigdelset(&inner_mask, SIGINT|SIGTSTP);
 
             // parent waits for foreground job to terminate
-            int status;
-            if (waitpid(pid, &status, 0) < 0) {
-                unix_error("eval waitpid");
-            }
-
             waitfg(pid);
+
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the signals
 
         } else {
             sigprocmask(SIG_BLOCK, &mask, NULL); // block signals with races(global variable jobs) to avoid interrupting
@@ -343,7 +346,14 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-    // wait for the FG process
+    // unblock SIGCHLD signal, in order to suspend() can return after when SIGCHLD signal handler returns
+    sigset_t mask;
+    sigemptyset(&mask);
+    while(!fg_pid_exit_flag) {
+        sigsuspend(&mask); // atomic operation. suspend current thread, as for time of return, refering to man 7 sigsuspend 
+    }
+
+    fg_pid_exit_flag = 0; // reset flag
 
     return;
 }
@@ -362,20 +372,25 @@ void waitfg(pid_t pid)
 void sigchld_handler(int sig) 
 {
     int old_errno = errno; // save errno
+    errno = 0; // reset
     sigset_t mask, prev_mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGCHLD|SIGINT|SIGTSTP);
 
     // obtain status information of children processes
     // no block calling handler | obtain getting stopped children | obtain getting continued children
-    int status, pid;
+    int status;
+    pid_t pid;
     while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
         /* block signals to avoid interrupting by other signal_handler 
            that has race condition(e.g. access global jobs) with this handler */
         sigprocmask(SIG_BLOCK, &mask, &prev_mask);
 
-        struct job_t * job = getjobpid(jobs, pid);
-        if (WIFSTOPPED(status)) { // deal with stopped child 
+        struct job_t *job = getjobpid(jobs, pid);
+        if (WIFSTOPPED(status)) { // deal with stopped child
+            if (job->state == FG) {
+                fg_pid_exit_flag = pid; // inform main shell not to wait FG process
+            }
             job->state = ST;
         } else if (WIFCONTINUED(status)) { // deal with continued child 
             if (job->pid == fgpid(jobs)) {
@@ -383,18 +398,21 @@ void sigchld_handler(int sig)
             } else {
                 job->state = BG;
             }
-        } else if (WIFEXITED(status)) { // deal with terminated child
-            deletejob(jobs, pid);
+        } else if (WIFEXITED(status) || WIFSIGNALED(status)) { // deal with terminated child    
+            if (job->state == FG) {
+                fg_pid_exit_flag = pid; // set the global fg-reaped flag to notify main process to wake up
+            }
+            deletejob(jobs, pid); // delete must be after if-statement, because deletejob will clear job structure pointed to by *job
         } else {
-            write(STDOUT_FILENO, "sigchld_handler unexpected status\n", 36);
+            write(STDOUT_FILENO, "sigchld_handler unexpected status\n", 35);
         }
 
         // restore signals
         sigprocmask(SIG_SETMASK, &prev_mask, NULL);
     }
     // deal error if exists
-    if (errno != ECHILD) { // ECHILD means no child process
-        write(STDOUT_FILENO, "SIGCHLD received\n", 18);
+    if (errno == ECHILD) { // ECHILD means no child process
+        write(STDOUT_FILENO, "no child process\n", 17);
     }
 
     errno = old_errno; // restore errno
@@ -416,9 +434,12 @@ void sigint_handler(int sig)
     sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signals
 
     pid_t pid = fgpid(jobs);
-    if (kill(-pid, SIGINT) < 0) {
-        write(STDOUT_FILENO, "sigint_handler: kill failed\n", 59);
+    if (pid > 0) {
+        if (kill(-pid, SIGINT) < 0) {
+            write(STDOUT_FILENO, "sigint_handler: kill failed\n", 29);
+        }
     }
+    
 
     sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore signals
     errno = old_errno; // restore errno
@@ -439,8 +460,10 @@ void sigtstp_handler(int sig)
     sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signals
 
     pid_t pid = fgpid(jobs);
-    if (kill(-pid, SIGTSTP) < 0) {
-        write(STDOUT_FILENO, "sigint_handler: kill failed\n", 59);
+    if (pid > 0) {
+        if (kill(-pid, SIGTSTP) < 0) {
+            write(STDOUT_FILENO, "sigint_handler: kill failed\n", 29);
+        }
     }
 
     sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore signals
@@ -666,6 +689,5 @@ void sigquit_handler(int sig)
     printf("Terminating after receipt of SIGQUIT signal\n");
     exit(1);
 }
-
 
 
