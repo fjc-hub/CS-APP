@@ -88,6 +88,17 @@ void app_error(char *msg);
 typedef void handler_t(int);
 handler_t *Signal(int signum, handler_t *handler);
 
+/* Sio (Signal-safe I/O) routines */
+ssize_t sio_puts(char s[]);
+ssize_t sio_putl(long v);
+void sio_error(char s[]);
+
+/* Sio wrappers */
+ssize_t Sio_puts(char s[]);
+ssize_t Sio_putl(long v);
+void Sio_error(char s[]);
+ssize_t Sio_write_event(int jid, pid_t pid, char* event, int sig);
+
 /*
  * main - The shell's main routine 
  */
@@ -199,29 +210,27 @@ void eval(char *cmdline)
         sigemptyset(&mask_reap);
         sigaddset(&mask_reap, SIGCHLD);
         // block SIGCHLD signal(reap child in handler), be sure to addjob() must be called before deletejob()
-        sigprocmask(SIG_BLOCK, &mask_reap, &prev_mask); 
+        sigprocmask(SIG_BLOCK, &mask_reap, &prev_mask);
         
         if ((pid = fork()) == 0) {
             // child process
-            // unblock SIGCHLD signal of child, because it inherits signal mask from parent
+            // 1.unblock SIGCHLD signal of child, because it inherits signal mask from parent
             sigprocmask(SIG_SETMASK, &prev_mask, NULL);
-            // move child to a new process group, to avoid parent(shell) receiving SIGINT(ctrl+c)
+            // 2.move child to a new process group, to avoid parent(shell) receiving SIGINT(ctrl+c)
             setpgid(0, 0);
-            // load and run program
+            // 3.load and run program
             if (execve(argv[0], argv, environ) < 0) { // exec*() will set signal handler back to default handler, but signal block mask not
                 unix_error("eval execve");
             }
             // the child process certainly not reach here
+        } else if (pid < 0) {
+            unix_error("eval fork error");
+            return ;
         }
 
         if (!bg) {
             sigprocmask(SIG_BLOCK, &mask, NULL); // block signals with races(global variable jobs) to avoid interrupting
             addjob(jobs, pid, FG, cmdline); // add job as FG
-
-            // unblock SIGINT and SIGTSTP before waitfg after addjob
-            sigset_t inner_mask;
-            sigfillset(&inner_mask);
-            sigdelset(&inner_mask, SIGINT|SIGTSTP);
 
             // parent waits for foreground job to terminate
             waitfg(pid);
@@ -321,7 +330,7 @@ void do_bgfg(char **argv)
 {
     pid_t pid;
     if (!strncmp(argv[1], "%", 1)) {
-        struct job_t* job = getjobjid(jobs, atoi(argv[1]));
+        struct job_t* job = getjobjid(jobs, atoi(argv[1]+1));
         if (job == NULL) {
             printf("%s: No such job\n", argv[1]);
             return;
@@ -331,12 +340,28 @@ void do_bgfg(char **argv)
         pid = atoi(argv[1]);
     }
     if (!strcmp(argv[0], "fg")) {
-        // switch to foreground
+        sigset_t mask, prev_mask;
+        sigemptyset(&mask);
+        sigaddset(&mask, SIGCHLD);
+        sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block SIGCHLD signal
+        
+        // set job's state to FG
+        struct job_t* job = getjobpid(jobs, pid);
+        job->state = FG;
 
-    }
-    // send SIGCONT
-    if (kill(-pid, SIGCONT) < 0) {
-        unix_error("kill SIGCONT");
+        // send SIGCONT
+        if (kill(-pid, SIGCONT) < 0) {
+            unix_error("kill SIGCONT");
+        }
+        // waiting for FG
+        waitfg(pid);
+        
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore signals
+    } else {
+        // send SIGCONT
+        if (kill(-pid, SIGCONT) < 0) {
+            unix_error("kill SIGCONT");
+        }
     }
     return;
 }
@@ -346,6 +371,18 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
+    // unblock SIGINT and SIGTSTP before waitfg after addjob, so that sigsuspend() can be interrupted
+    sigset_t unlock_mask, prev_mask;
+    sigemptyset(&unlock_mask);
+    sigaddset(&unlock_mask, SIGINT|SIGTSTP);
+    sigprocmask(SIG_UNBLOCK, &unlock_mask, &prev_mask);
+
+    // block SIGCHLD signal to protect update global variable fg_pid_exit_flag
+    sigset_t block_mask;
+    sigemptyset(&block_mask);
+    sigaddset(&block_mask, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &block_mask, NULL);
+
     // unblock SIGCHLD signal, in order to suspend() can return after when SIGCHLD signal handler returns
     sigset_t mask;
     sigemptyset(&mask);
@@ -353,7 +390,9 @@ void waitfg(pid_t pid)
         sigsuspend(&mask); // atomic operation. suspend current thread, as for time of return, refering to man 7 sigsuspend 
     }
 
-    fg_pid_exit_flag = 0; // reset flag
+    fg_pid_exit_flag = 0; // reset flag, must be reset in SIGCHLD-uninterrupted code block???
+
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore signals
 
     return;
 }
@@ -392,6 +431,7 @@ void sigchld_handler(int sig)
                 fg_pid_exit_flag = pid; // inform main shell not to wait FG process
             }
             job->state = ST;
+            Sio_write_event(job->jid, job->pid, "stopped", 20);
         } else if (WIFCONTINUED(status)) { // deal with continued child 
             if (job->pid == fgpid(jobs)) {
                 job->state = FG;
@@ -402,17 +442,23 @@ void sigchld_handler(int sig)
             if (job->state == FG) {
                 fg_pid_exit_flag = pid; // set the global fg-reaped flag to notify main process to wake up
             }
+            if (WIFSIGNALED(status)) 
+                Sio_write_event(job->jid, job->pid, "terminated", 2);
             deletejob(jobs, pid); // delete must be after if-statement, because deletejob will clear job structure pointed to by *job
         } else {
-            write(STDOUT_FILENO, "sigchld_handler unexpected status\n", 35);
+            Sio_puts("sigchld_handler unexpected status\n");
         }
 
         // restore signals
         sigprocmask(SIG_SETMASK, &prev_mask, NULL);
     }
+    
     // deal error if exists
-    if (errno == ECHILD) { // ECHILD means no child process
-        write(STDOUT_FILENO, "no child process\n", 17);
+    if (errno != 0 && errno != ECHILD) { // ECHILD means no child process
+        Sio_puts(" sigchld_handler error: ");
+        Sio_putl((long)errno);
+        Sio_puts(strerror(errno));
+        Sio_puts("\n");
     }
 
     errno = old_errno; // restore errno
@@ -436,7 +482,7 @@ void sigint_handler(int sig)
     pid_t pid = fgpid(jobs);
     if (pid > 0) {
         if (kill(-pid, SIGINT) < 0) {
-            write(STDOUT_FILENO, "sigint_handler: kill failed\n", 29);
+            Sio_puts("sigint_handler: kill failed\n");
         }
     }
     
@@ -462,7 +508,7 @@ void sigtstp_handler(int sig)
     pid_t pid = fgpid(jobs);
     if (pid > 0) {
         if (kill(-pid, SIGTSTP) < 0) {
-            write(STDOUT_FILENO, "sigint_handler: kill failed\n", 29);
+            Sio_puts("sigtstp_handler: kill failed\n");
         }
     }
 
@@ -690,4 +736,106 @@ void sigquit_handler(int sig)
     exit(1);
 }
 
+/* sio_reverse - Reverse a string (from K&R) */
+static void sio_reverse(char s[])
+{
+    int c, i, j;
 
+    for (i = 0, j = strlen(s)-1; i < j; i++, j--) {
+        c = s[i];
+        s[i] = s[j];
+        s[j] = c;
+    }
+}
+
+/* sio_ltoa - Convert long to base b string (from K&R) */
+static void sio_ltoa(long v, char s[], int b) 
+{
+    int c, i = 0;
+    int neg = v < 0;
+
+    if (neg)
+	v = -v;
+
+    do {  
+        s[i++] = ((c = (v % b)) < 10)  ?  c + '0' : c - 10 + 'a';
+    } while ((v /= b) > 0);
+
+    if (neg)
+	s[i++] = '-';
+
+    s[i] = '\0';
+    sio_reverse(s);
+}
+
+/* sio_strlen - Return length of string (from K&R) */
+static size_t sio_strlen(char s[])
+{
+    int i = 0;
+
+    while (s[i] != '\0')
+        ++i;
+    return i;
+}
+
+ssize_t sio_puts(char s[]) /* Put string */
+{
+    return write(STDOUT_FILENO, s, sio_strlen(s));
+}
+
+ssize_t sio_putl(long v) /* Put long */
+{
+    char s[128];
+    
+    sio_ltoa(v, s, 10); /* Based on K&R itoa() */ 
+    return sio_puts(s);
+}
+
+void sio_error(char s[]) /* Put error message and exit */
+{
+    sio_puts(s);
+    _exit(1);
+}
+
+/*******************************
+ * Wrappers for the SIO routines
+ ******************************/
+ssize_t Sio_putl(long v)
+{
+    ssize_t n;
+  
+
+    if ((n = sio_putl(v)) < 0)
+	sio_error("Sio_putl error");
+    return n;
+}
+
+ssize_t Sio_puts(char s[])
+{
+    ssize_t n;
+  
+    if ((n = sio_puts(s)) < 0)
+	sio_error("Sio_puts error");
+    return n;
+}
+
+void Sio_error(char s[])
+{
+    sio_error(s);
+}
+
+// safe to write output in asynchronized signal handler
+ssize_t Sio_write_event(int jid, pid_t pid, char* event, int sig) {
+    ssize_t n = 0;
+    n += Sio_puts("[");
+    n += Sio_putl((long)jid);
+    n += Sio_puts("] ");
+    n += Sio_puts("(");
+    n += Sio_putl((long)pid);
+    n += Sio_puts(") ");
+    n += Sio_puts(event);
+    n += Sio_puts(" by signal ");
+    n += Sio_putl((long)sig);
+    n += Sio_puts("\n");
+    return n;
+}
