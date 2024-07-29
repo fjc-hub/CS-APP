@@ -99,6 +99,8 @@ ssize_t Sio_putl(long v);
 void Sio_error(char s[]);
 ssize_t Sio_write_event(int jid, pid_t pid, char* event, int sig);
 
+int isPositiveInteger(char *s);
+
 /*
  * main - The shell's main routine 
  */
@@ -327,9 +329,19 @@ int builtin_cmd(char **argv)
  * do_bgfg - Execute the builtin bg and fg commands
  */
 void do_bgfg(char **argv) 
-{
+{   
+    // check argv
+    if (argv[1] == NULL) {
+        printf("%s command requires PID or %%jobid argument\n", argv[0]);
+        return;
+    }
+    int is_jid = !strncmp(argv[1], "%", 1);
+    if ((!is_jid && isPositiveInteger(argv[1]) == -1) || (is_jid && isPositiveInteger(argv[1]+1) == -1)) {
+        printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+        return;
+    }
     pid_t pid;
-    if (!strncmp(argv[1], "%", 1)) {
+    if (is_jid) {
         struct job_t* job = getjobjid(jobs, atoi(argv[1]+1));
         if (job == NULL) {
             printf("%s: No such job\n", argv[1]);
@@ -337,8 +349,14 @@ void do_bgfg(char **argv)
         }
         pid = job->pid;
     } else {
-        pid = atoi(argv[1]);
+        struct job_t* job = getjobpid(jobs, atoi(argv[1]));
+        if (job == NULL) {
+            printf("(%s): No such process\n", argv[1]);
+            return;
+        }
+        pid = job->pid;
     }
+    struct job_t* job = getjobpid(jobs, pid);
     if (!strcmp(argv[0], "fg")) {
         sigset_t mask, prev_mask;
         sigemptyset(&mask);
@@ -346,7 +364,6 @@ void do_bgfg(char **argv)
         sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block SIGCHLD signal
         
         // set job's state to FG
-        struct job_t* job = getjobpid(jobs, pid);
         job->state = FG;
 
         // send SIGCONT
@@ -362,6 +379,7 @@ void do_bgfg(char **argv)
         if (kill(-pid, SIGCONT) < 0) {
             unix_error("kill SIGCONT");
         }
+        printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
     }
     return;
 }
@@ -827,7 +845,7 @@ void Sio_error(char s[])
 // safe to write output in asynchronized signal handler
 ssize_t Sio_write_event(int jid, pid_t pid, char* event, int sig) {
     ssize_t n = 0;
-    n += Sio_puts("[");
+    n += Sio_puts("Job [");
     n += Sio_putl((long)jid);
     n += Sio_puts("] ");
     n += Sio_puts("(");
@@ -838,4 +856,14 @@ ssize_t Sio_write_event(int jid, pid_t pid, char* event, int sig) {
     n += Sio_putl((long)sig);
     n += Sio_puts("\n");
     return n;
+}
+
+int isPositiveInteger(char *s) {
+    int i;
+    for(i=0; s[i]; i++) {
+        if (!isdigit(s[i])) {
+            return -1;
+        }
+    }
+    return 1;
 }
