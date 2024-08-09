@@ -50,3 +50,19 @@ To get a list of the driver flags:
 
 	unix> mdriver -h
 
+	unix> ./mdriver -v -f ./traces/coalescing-bal.rep
+
+./mdriver -v -f ./short1-bal.rep
+./mdriver -v -f ./short2-bal.rep
+./mdriver -v -f ./short3-bal.rep
+./mdriver -v -f ./traces/amptjp-bal.rep
+./mdriver -v -f ./traces/cccp-bal.rep
+./mdriver -v -f ./traces/cp-decl-bal.rep
+./mdriver -v -f ./traces/expr-bal.rep
+./mdriver -v -f ./traces/coalescing-bal.rep
+./mdriver -v -f ./traces/random-bal.rep
+./mdriver -v -f ./traces/random2-bal.rep
+./mdriver -v -f ./traces/binary-bal.rep
+./mdriver -v -f ./traces/binary2-bal.rep
+./mdriver -v -f ./traces/realloc-bal.rep
+./mdriver -v -f ./traces/realloc2-bal.rep
