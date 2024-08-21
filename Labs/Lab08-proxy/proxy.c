@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include "csapp.h"
 #include "blockqueue.h"
+#include "cache.h"
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -21,6 +22,9 @@ static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64;
 // blocked queue for connected fd
 BlockQueue *BQ;
 
+// Cache based on LRU, providing thread-safely insert and get method
+LruCache *lruCache;
+
 // worker thread, for comsuming BQ, gets a integer argument as connected socket fd
 void *worker_thread(void *vargp);
 void *worker_task(void *vargp);
@@ -35,7 +39,7 @@ void gethostnamefromhttp(char *src, char *method, char *host, char *port, char *
 int send_http_request(int fd, char **httpreq);
 
 // redirect http response
-int redirect_http_response(int srcfd, int desfd);
+int redirect_http_response(int srcfd, int desfd, char *cache_key);
 
 // free space of string array
 void free_str_arr(char **arr);
@@ -52,8 +56,9 @@ int main(int argc, char **argv)
         exit(0);
     }
 
-    // 1.initialize shared blocked queue
+    // 1.initialize shared blocked queue and cache
     BQ = bq_init(MAX_BQ_SIZE);
+    lruCache = cache_create(MAX_CACHE_SIZE, MAX_OBJECT_SIZE);
 
     // 2.initialize the worker thread (create pthreads that get task from MyTaskQueue and finish it)
     for (i=0; i<MAX_WK_NUM; i++) {
@@ -71,6 +76,7 @@ int main(int argc, char **argv)
 
     // free shared blocked queue
     bq_clear(BQ);
+    cache_free(lruCache);
     return 0;
 }
 
@@ -89,6 +95,17 @@ void *worker_task(void *vargp) {
 
     // 1.wait and read an entire HTTP request
     old_req = get_http_request(connfd);
+    // 2.check if cache-hit
+    CacheItem *cacheItem = cache_get(old_req[0], lruCache);
+    if (cacheItem != NULL) {
+        // cache hitting
+        Rio_writen(connfd, cacheItem->value, cacheItem->size);
+        free_str_arr(old_req);
+        return 0;
+    }
+    // cache missiing
+    char *cache_key = Malloc(sizeof(*cache_key)*MAXLINE); // get cache key
+    strcpy(cache_key, old_req[0]);
     gethostnamefromhttp(old_req[0], method, hostname, port, uri);
     free_str_arr(old_req);
     if (strncmp("GET", method, 3)) {
@@ -128,7 +145,7 @@ void *worker_task(void *vargp) {
     free_str_arr(new_req);
 
     // 4.redirect response to client
-    if (redirect_http_response(clientfd, connfd)) {
+    if (redirect_http_response(clientfd, connfd, cache_key)) {
         printf("redirect_http_response fail\n");
     }
 
@@ -175,15 +192,23 @@ int send_http_request(int fd, char **httpreq) {
     return 0;
 }
 
-int redirect_http_response(int srcfd, int desfd) {
+int redirect_http_response(int srcfd, int desfd, char *cache_key) {
     char buf[MAXLINE];
-    ssize_t rsz;
+    ssize_t rsz, cache_sz=0;
     rio_t rio;
+    char *cache_buf = Malloc(sizeof(cache_buf)*MAX_OBJECT_SIZE);
 
     Rio_readinitb(&rio, srcfd);
     while((rsz = Rio_readnb(&rio, buf, MAX_HTTP_LINE)) > 0) {
         Rio_writen(desfd, buf, rsz);
+        if (cache_sz + rsz <= MAX_OBJECT_SIZE) {
+            strncpy(cache_buf+cache_sz, buf, rsz);
+        }
+        cache_sz += rsz;
     }
+
+    // cache this http response
+    cache_insert(cache_key, cache_buf, cache_sz, lruCache);
     return 0;
 }
 
